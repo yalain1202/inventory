@@ -23,21 +23,18 @@
   .row small{color:#555}
   label.chk{display:flex;align-items:center;gap:8px;font-size:15px}
   label.chk input{width:auto;margin:0}
+  #locInfo{font-size:15px;color:#333;margin:4px 0}
 </style>
 </head>
 <body>
+
+<!-- 1. 姓名與通關碼 -->
 <div class="box">
   <input id="who" placeholder="盤點人姓名（例如：黃彥然）">
   <input id="token" placeholder="通關碼" type="password">
 </div>
 
-<div class="box" id="mine" style="display:none">
-  <div id="mineSummary"></div>
-  <div class="bar"><div id="mineBar" style="width:0"></div></div>
-  <label class="chk"><input type="checkbox" id="showDone">顯示已盤點</label>
-  <div id="mineList"></div>
-</div>
-
+<!-- 2. 掃描區（在清單上面） -->
 <div class="box">
   <div id="reader"></div>
   <button id="start">開始掃描</button>
@@ -47,8 +44,19 @@
   <button class="gray" id="manualGo">查詢</button>
 </div>
 
+<!-- 3. 確認卡片與訊息（緊接在掃描區下方） -->
 <div class="box" id="card" style="display:none"></div>
 <div id="msg" class="box" style="display:none"></div>
+
+<!-- 4. 盤點清單 -->
+<div class="box" id="mine" style="display:none">
+  <div id="mineSummary"></div>
+  <div class="bar"><div id="mineBar" style="width:0"></div></div>
+  <select id="loc"></select>
+  <div id="locInfo"></div>
+  <label class="chk"><input type="checkbox" id="showDone">顯示已盤點</label>
+  <div id="mineList"></div>
+</div>
 
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script>
@@ -58,11 +66,13 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let scanner = null, current = null, busy = false;
 let mine = null, mineSeq = 0, mineTimer = null;
+let selLoc = '';   // 目前選的存放地點，空字串代表全部
 
 ['who','token'].forEach(k => {
   $(k).value = localStorage.getItem(k) || '';
   $(k).addEventListener('change', () => {
     localStorage.setItem(k, $(k).value.trim());
+    if (k === 'who') selLoc = '';
     loadMine();
   });
   // 輸入停頓 0.8 秒後自動載入清單
@@ -70,11 +80,13 @@ let mine = null, mineSeq = 0, mineTimer = null;
     clearTimeout(mineTimer);
     mineTimer = setTimeout(() => {
       localStorage.setItem(k, $(k).value.trim());
+      if (k === 'who') selLoc = '';
       loadMine();
     }, 800);
   });
 });
 $('showDone').onchange = () => renderMine();
+$('loc').onchange = () => { selLoc = $('loc').value; renderMine(); };
 
 async function call(payload) {
   const r = await fetch(API, { method: 'POST',
@@ -101,16 +113,40 @@ async function loadMine() {
     return;
   }
   if (seq !== mineSeq) return;           // 已有更新的請求，丟棄舊結果
-  if (!res.ok) { $('mineSummary').innerHTML = `<span class="warn">${esc(res.msg)}</span>`; $('mineList').innerHTML = ''; return; }
+  if (!res.ok) {
+    $('mineSummary').innerHTML = `<span class="warn">${esc(res.msg)}</span>`;
+    $('mineList').innerHTML = ''; return;
+  }
   mine = res;
   renderMine();
+}
+
+function renderLocOptions() {
+  // 統計各存放地點的 剩餘/總數（依清單順序，後端已依地點排序）
+  const stat = new Map();
+  mine.items.forEach(it => {
+    const k = it.存放地點 || '（未填）';
+    const s = stat.get(k) || { rem: 0, tot: 0 };
+    s.tot++;
+    if (it.盤點狀態 !== '已盤點') s.rem++;
+    stat.set(k, s);
+  });
+  if (selLoc && !stat.has(selLoc)) selLoc = '';
+  let html = `<option value="">全部地點（剩 ${mine.remaining}/${mine.total}）</option>`;
+  stat.forEach((s, k) => {
+    html += `<option value="${esc(k)}"${k === selLoc ? ' selected' : ''}>${esc(k)}（剩 ${s.rem}/${s.tot}）</option>`;
+  });
+  $('loc').innerHTML = html;
+  $('loc').value = selLoc;
+  return stat;
 }
 
 function renderMine() {
   if (!mine) return;
   if (mine.total === 0) {
     $('mineSummary').innerHTML = '<span class="warn">清冊中找不到此保管人，請確認姓名</span>';
-    $('mineBar').style.width = '0'; $('mineList').innerHTML = ''; return;
+    $('mineBar').style.width = '0'; $('mineList').innerHTML = '';
+    $('loc').innerHTML = ''; $('locInfo').textContent = ''; return;
   }
   const pct = Math.round(mine.done / mine.total * 100);
   $('mineSummary').innerHTML = mine.remaining === 0
@@ -118,8 +154,19 @@ function renderMine() {
     : `剩餘 <b style="font-size:22px">${mine.remaining}</b> 件未盤點（共 ${mine.total} 件，已完成 ${mine.done} 件）`;
   $('mineBar').style.width = pct + '%';
 
+  const stat = renderLocOptions();
+  if (selLoc) {
+    const s = stat.get(selLoc);
+    $('locInfo').innerHTML = s.rem === 0
+      ? `📍${esc(selLoc)}：<span class="ok">已全部盤點完成 ✔</span>`
+      : `📍${esc(selLoc)}：此地點剩餘 <b>${s.rem}</b> 件（共 ${s.tot} 件）`;
+  } else {
+    $('locInfo').textContent = '';
+  }
+
   const showDone = $('showDone').checked;
   const html = mine.items.map((it, i) => ({ it, i }))
+    .filter(x => !selLoc || (x.it.存放地點 || '（未填）') === selLoc)
     .filter(x => showDone || x.it.盤點狀態 !== '已盤點')
     .map(({ it, i }) => `
       <button class="row ${it.盤點狀態 === '已盤點' ? 'done' : ''}" data-i="${i}">
@@ -217,7 +264,7 @@ async function confirmIt() {
   if (res.ok) {
     say('✔ ' + esc(current.item.財產名稱) + ' 盤點完成', 'ok');
     reset(true);
-    loadMine();                           // 更新剩餘數量與清單
+    loadMine();                           // 更新剩餘數量與清單（保留所選地點）
   } else { say(esc(res.msg), 'warn'); $('ok').disabled = false; }
 }
 
