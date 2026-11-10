@@ -1,0 +1,171 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<html>
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <meta http-equiv="Content-Style-Type" content="text/css">
+  <title></title>
+  <meta name="Generator" content="Cocoa HTML Writer">
+  <meta name="CocoaVersion" content="2775.3">
+  <style type="text/css">
+    p.p1 {margin: 0.0px 0.0px 0.0px 0.0px; font: 12.0px Helvetica}
+    p.p2 {margin: 0.0px 0.0px 0.0px 0.0px; font: 12.0px Helvetica; min-height: 14.0px}
+  </style>
+</head>
+<body>
+<p class="p1">&lt;!DOCTYPE html&gt;</p>
+<p class="p1">&lt;html lang="zh-TW"&gt;</p>
+<p class="p1">&lt;head&gt;</p>
+<p class="p1">&lt;meta charset="utf-8"&gt;</p>
+<p class="p1">&lt;meta name="viewport" content="width=device-width,initial-scale=1"&gt;</p>
+<p class="p1">&lt;meta name="apple-mobile-web-app-capable" content="yes"&gt;</p>
+<p class="p1">&lt;title&gt;二溪國小 財產盤點&lt;/title&gt;</p>
+<p class="p1">&lt;style&gt;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>body{font-family:-apple-system,sans-serif;margin:0;padding:12px;background:#f4f4f6}</p>
+<p class="p1"><span class="Apple-converted-space">  </span>.box{background:#fff;border-radius:12px;padding:12px;margin-bottom:12px}</p>
+<p class="p1"><span class="Apple-converted-space">  </span>input,select,button{font-size:17px;padding:10px;width:100%;box-sizing:border-box;margin:4px 0}</p>
+<p class="p1"><span class="Apple-converted-space">  </span>button{border:0;border-radius:10px;background:#0a84ff;color:#fff}</p>
+<p class="p1"><span class="Apple-converted-space">  </span>button:disabled{opacity:.5}</p>
+<p class="p1"><span class="Apple-converted-space">  </span>button.gray{background:#8e8e93}</p>
+<p class="p1"><span class="Apple-converted-space">  </span>.warn{color:#c00;font-weight:bold}</p>
+<p class="p1"><span class="Apple-converted-space">  </span>.ok{color:#188038;font-weight:bold}</p>
+<p class="p1"><span class="Apple-converted-space">  </span>td{padding:3px 6px;vertical-align:top} td:first-child{color:#666;white-space:nowrap}</p>
+<p class="p1"><span class="Apple-converted-space">  </span>#reader{width:100%}</p>
+<p class="p1">&lt;/style&gt;</p>
+<p class="p1">&lt;/head&gt;</p>
+<p class="p1">&lt;body&gt;</p>
+<p class="p1">&lt;div class="box"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>&lt;input id="who" placeholder="盤點人姓名（例如：黃彥然）"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>&lt;input id="token" placeholder="通關碼" type="password"&gt;</p>
+<p class="p1">&lt;/div&gt;</p>
+<p class="p2"><br></p>
+<p class="p1">&lt;div class="box"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>&lt;div id="reader"&gt;&lt;/div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>&lt;button id="start"&gt;開始掃描&lt;/button&gt;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>&lt;label&gt;相機無法使用時，改用拍照辨識：</p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;input type="file" id="file" accept="image/*" capture="environment"&gt;&lt;/label&gt;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>&lt;input id="manual" placeholder="或手動輸入登錄號（例如 3000111）"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>&lt;button class="gray" id="manualGo"&gt;查詢&lt;/button&gt;</p>
+<p class="p1">&lt;/div&gt;</p>
+<p class="p2"><br></p>
+<p class="p1">&lt;div class="box" id="card" style="display:none"&gt;&lt;/div&gt;</p>
+<p class="p1">&lt;div id="msg" class="box" style="display:none"&gt;&lt;/div&gt;</p>
+<p class="p2"><br></p>
+<p class="p1">&lt;script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"&gt;&lt;/script&gt;</p>
+<p class="p1">&lt;script&gt;</p>
+<p class="p1">const API = 'https://script.google.com/macros/s/AKfycbxtdsSc31OX5Yx7cXj17WGbpvD4thaJFqDKVRmyGbg4XA9nDyA-UhoL7cT73b25pcz6/exec';</p>
+<p class="p1">const $ = id =&gt; document.getElementById(id);</p>
+<p class="p1">let scanner = null, current = null, busy = false;</p>
+<p class="p2"><br></p>
+<p class="p1">['who','token'].forEach(k =&gt; {</p>
+<p class="p1"><span class="Apple-converted-space">  </span>$(k).value = localStorage.getItem(k) || '';</p>
+<p class="p1"><span class="Apple-converted-space">  </span>$(k).addEventListener('change', () =&gt; localStorage.setItem(k, $(k).value.trim()));</p>
+<p class="p1">});</p>
+<p class="p2"><br></p>
+<p class="p1">async function call(payload) {</p>
+<p class="p1"><span class="Apple-converted-space">  </span>const r = await fetch(API, { method: 'POST',</p>
+<p class="p1"><span class="Apple-converted-space">    </span>body: JSON.stringify({ ...payload, token: $('token').value.trim() }) });</p>
+<p class="p1"><span class="Apple-converted-space">  </span>return r.json();</p>
+<p class="p1">}</p>
+<p class="p2"><br></p>
+<p class="p1">function say(t, cls) {</p>
+<p class="p1"><span class="Apple-converted-space">  </span>const m = $('msg'); m.style.display = 'block';</p>
+<p class="p1"><span class="Apple-converted-space">  </span>m.innerHTML = `&lt;span class="${cls||''}"&gt;${t}&lt;/span&gt;`;</p>
+<p class="p1">}</p>
+<p class="p2"><br></p>
+<p class="p1">async function startScan() {</p>
+<p class="p1"><span class="Apple-converted-space">  </span>if (!scanner) scanner = new Html5Qrcode('reader');</p>
+<p class="p1"><span class="Apple-converted-space">  </span>try {</p>
+<p class="p1"><span class="Apple-converted-space">    </span>await scanner.start({ facingMode: 'environment' },</p>
+<p class="p1"><span class="Apple-converted-space">      </span>{ fps: 10, qrbox: 250 }, onCode);</p>
+<p class="p1"><span class="Apple-converted-space">  </span>} catch (e) { say('相機無法啟動，請改用下方拍照辨識或手動輸入', 'warn'); }</p>
+<p class="p1">}</p>
+<p class="p2"><br></p>
+<p class="p1">async function onCode(code) {</p>
+<p class="p1"><span class="Apple-converted-space">  </span>if (busy) return;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>busy = true;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>try { if (scanner &amp;&amp; scanner.isScanning) await scanner.stop(); } catch (e) {}</p>
+<p class="p1"><span class="Apple-converted-space">  </span>await lookup(code);</p>
+<p class="p1"><span class="Apple-converted-space">  </span>busy = false;</p>
+<p class="p1">}</p>
+<p class="p2"><br></p>
+<p class="p1">async function lookup(code) {</p>
+<p class="p1"><span class="Apple-converted-space">  </span>if (!$('who').value.trim()) { say('請先輸入盤點人姓名', 'warn'); return; }</p>
+<p class="p1"><span class="Apple-converted-space">  </span>say('查詢中…');</p>
+<p class="p1"><span class="Apple-converted-space">  </span>let res;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>try { res = await call({ action: 'lookup', code, who: $('who').value.trim() }); }</p>
+<p class="p1"><span class="Apple-converted-space">  </span>catch (e) { say('連線失敗，請確認網路後重試', 'warn'); return; }</p>
+<p class="p1"><span class="Apple-converted-space">  </span>if (!res.ok) { say(res.msg, 'warn'); $('card').style.display = 'none'; return; }</p>
+<p class="p1"><span class="Apple-converted-space">  </span>current = { code, items: res.items, item: null };</p>
+<p class="p1"><span class="Apple-converted-space">  </span>$('msg').style.display = 'none';</p>
+<p class="p1"><span class="Apple-converted-space">  </span>if (res.items.length === 1) pick(0); else showChoices(res.items);</p>
+<p class="p1">}</p>
+<p class="p2"><br></p>
+<p class="p1">function pick(i) {</p>
+<p class="p1"><span class="Apple-converted-space">  </span>current.item = current.items[i];</p>
+<p class="p1"><span class="Apple-converted-space">  </span>showCard(current.item);</p>
+<p class="p1">}</p>
+<p class="p2"><br></p>
+<p class="p1">// 撞號：同一個登錄號對應多個品項，讓同仁對照標籤上的物品編號選擇</p>
+<p class="p1">function showChoices(items) {</p>
+<p class="p1"><span class="Apple-converted-space">  </span>const btns = items.map((it, i) =&gt; `</p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;button class="gray" data-i="${i}" style="text-align:left"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;b&gt;${it.物品編號}&lt;/b&gt;｜${it.財產名稱}${it.盤點狀態 === '已盤點' ? '（已盤點）' : ''}&lt;br&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;small&gt;${it.型式} ／ ${it.存放地點} ／ ${it.保管人}&lt;/small&gt;</p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;/button&gt;`).join('');</p>
+<p class="p1"><span class="Apple-converted-space">  </span>$('card').style.display = 'block';</p>
+<p class="p1"><span class="Apple-converted-space">  </span>$('card').innerHTML =</p>
+<p class="p1"><span class="Apple-converted-space">    </span>`&lt;p class="warn"&gt;此登錄號對應 ${items.length} 個品項，請對照標籤上的「物品編號」選擇：&lt;/p&gt;</p>
+<p class="p1"><span class="Apple-converted-space">     </span>${btns}&lt;button id="cancel"&gt;取消，重新掃描&lt;/button&gt;`;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>$('card').querySelectorAll('button[data-i]').forEach(b =&gt; b.onclick = () =&gt; pick(+b.dataset.i));</p>
+<p class="p1"><span class="Apple-converted-space">  </span>$('cancel').onclick = reset;</p>
+<p class="p1">}</p>
+<p class="p2"><br></p>
+<p class="p1">function showCard(it) {</p>
+<p class="p1"><span class="Apple-converted-space">  </span>const rows = ['物品編號','財產名稱','型式','存放地點','保管人','領用單位','購置日期']</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.map(k =&gt; `&lt;tr&gt;&lt;td&gt;${k}&lt;/td&gt;&lt;td&gt;${it[k] ?? ''}&lt;/td&gt;&lt;/tr&gt;`).join('');</p>
+<p class="p1"><span class="Apple-converted-space">  </span>const done = it.盤點狀態 === '已盤點'</p>
+<p class="p1"><span class="Apple-converted-space">    </span>? `&lt;p class="ok"&gt;此品項已於 ${it.盤點時間} 由 ${it.盤點人} 盤點&lt;/p&gt;` : '';</p>
+<p class="p1"><span class="Apple-converted-space">  </span>const mine = it.notMine</p>
+<p class="p1"><span class="Apple-converted-space">    </span>? `&lt;p class="warn"&gt;注意：此品項保管人為 ${it.保管人}，非您本人&lt;/p&gt;` : '';</p>
+<p class="p1"><span class="Apple-converted-space">  </span>$('card').style.display = 'block';</p>
+<p class="p1"><span class="Apple-converted-space">  </span>$('card').innerHTML = `&lt;table&gt;${rows}&lt;/table&gt;${done}${mine}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;select id="cond"&gt;&lt;option&gt;正常&lt;/option&gt;&lt;option&gt;損壞&lt;/option&gt;&lt;option&gt;待報廢&lt;/option&gt;&lt;option&gt;地點不符&lt;/option&gt;&lt;/select&gt;</p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;input id="note" placeholder="備註（選填）"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;button id="ok"&gt;確認盤點&lt;/button&gt;</p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;button class="gray" id="cancel"&gt;取消，掃下一個&lt;/button&gt;`;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>$('ok').onclick = confirmIt;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>$('cancel').onclick = reset;</p>
+<p class="p1">}</p>
+<p class="p2"><br></p>
+<p class="p1">async function confirmIt() {</p>
+<p class="p1"><span class="Apple-converted-space">  </span>$('ok').disabled = true;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>let res;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>try {</p>
+<p class="p1"><span class="Apple-converted-space">    </span>res = await call({ action: 'confirm', code: current.code,</p>
+<p class="p1"><span class="Apple-converted-space">      </span>itemNo: current.item.物品編號,</p>
+<p class="p1"><span class="Apple-converted-space">      </span>who: $('who').value.trim(), condition: $('cond').value, note: $('note').value.trim() });</p>
+<p class="p1"><span class="Apple-converted-space">  </span>} catch (e) { say('連線失敗，請重試', 'warn'); $('ok').disabled = false; return; }</p>
+<p class="p1"><span class="Apple-converted-space">  </span>if (res.ok) { say('✔ ' + current.item.財產名稱 + ' 盤點完成', 'ok'); reset(true); }</p>
+<p class="p1"><span class="Apple-converted-space">  </span>else { say(res.msg, 'warn'); $('ok').disabled = false; }</p>
+<p class="p1">}</p>
+<p class="p2"><br></p>
+<p class="p1">function reset(keepMsg) {</p>
+<p class="p1"><span class="Apple-converted-space">  </span>$('card').style.display = 'none'; current = null;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>if (keepMsg !== true) $('msg').style.display = 'none';</p>
+<p class="p1"><span class="Apple-converted-space">  </span>startScan();</p>
+<p class="p1">}</p>
+<p class="p2"><br></p>
+<p class="p1">$('start').onclick = startScan;</p>
+<p class="p1">$('manualGo').onclick = () =&gt; { const v = $('manual').value.trim(); if (v) lookup(v); };</p>
+<p class="p1">$('file').onchange = async e =&gt; {</p>
+<p class="p1"><span class="Apple-converted-space">  </span>const f = e.target.files[0]; if (!f) return;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>if (!scanner) scanner = new Html5Qrcode('reader');</p>
+<p class="p1"><span class="Apple-converted-space">  </span>try { const code = await scanner.scanFile(f, false); await lookup(code); }</p>
+<p class="p1"><span class="Apple-converted-space">  </span>catch (err) { say('辨識不到 QR code，請靠近一點再拍', 'warn'); }</p>
+<p class="p1"><span class="Apple-converted-space">  </span>e.target.value = '';</p>
+<p class="p1">};</p>
+<p class="p1">&lt;/script&gt;</p>
+<p class="p1">&lt;/body&gt;</p>
+<p class="p1">&lt;/html&gt;</p>
+</body>
+</html>
