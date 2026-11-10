@@ -16,14 +16,25 @@
   .ok{color:#188038;font-weight:bold}
   td{padding:3px 6px;vertical-align:top} td:first-child{color:#666;white-space:nowrap}
   #reader{width:100%}
+  .bar{height:8px;background:#e5e5ea;border-radius:4px;overflow:hidden;margin:6px 0}
+  .bar>div{height:100%;background:#34c759}
+  .row{display:block;width:100%;text-align:left;background:#f2f2f7;color:#000;margin:6px 0;padding:10px}
+  .row.done{opacity:.55}
+  .row small{color:#555}
+  label.chk{display:flex;align-items:center;gap:8px;font-size:15px}
+  label.chk input{width:auto;margin:0}
+  #locInfo{font-size:15px;color:#333;margin:4px 0}
 </style>
 </head>
 <body>
+
+<!-- 1. 姓名與通關碼 -->
 <div class="box">
   <input id="who" placeholder="盤點人姓名（例如：黃彥然）">
   <input id="token" placeholder="通關碼" type="password">
 </div>
 
+<!-- 2. 掃描區（在清單上面） -->
 <div class="box">
   <div id="reader"></div>
   <button id="start">開始掃描</button>
@@ -33,19 +44,48 @@
   <button class="gray" id="manualGo">查詢</button>
 </div>
 
+<!-- 3. 確認卡片與訊息 -->
 <div class="box" id="card" style="display:none"></div>
 <div id="msg" class="box" style="display:none"></div>
+
+<!-- 4. 盤點清單 -->
+<div class="box" id="mine" style="display:none">
+  <div id="mineSummary"></div>
+  <div class="bar"><div id="mineBar" style="width:0"></div></div>
+  <select id="loc"></select>
+  <div id="locInfo"></div>
+  <label class="chk"><input type="checkbox" id="showDone">顯示已盤點</label>
+  <div id="mineList"></div>
+</div>
 
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script>
 const API = 'https://script.google.com/macros/s/AKfycbxtdsSc31OX5Yx7cXj17WGbpvD4thaJFqDKVRmyGbg4XA9nDyA-UhoL7cT73b25pcz6/exec';
 const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let scanner = null, current = null, busy = false;
+let mine = null, mineSeq = 0, mineTimer = null;
+let selLoc = '';
 
 ['who','token'].forEach(k => {
   $(k).value = localStorage.getItem(k) || '';
-  $(k).addEventListener('change', () => localStorage.setItem(k, $(k).value.trim()));
+  $(k).addEventListener('change', () => {
+    localStorage.setItem(k, $(k).value.trim());
+    if (k === 'who') selLoc = '';
+    loadMine();
+  });
+  $(k).addEventListener('input', () => {
+    clearTimeout(mineTimer);
+    mineTimer = setTimeout(() => {
+      localStorage.setItem(k, $(k).value.trim());
+      if (k === 'who') selLoc = '';
+      loadMine();
+    }, 800);
+  });
 });
+$('showDone').onchange = () => renderMine();
+$('loc').onchange = () => { selLoc = $('loc').value; renderMine(); };
 
 async function call(payload) {
   const r = await fetch(API, { method: 'POST',
@@ -58,6 +98,94 @@ function say(t, cls) {
   m.innerHTML = `<span class="${cls||''}">${t}</span>`;
 }
 
+/* ---------- 我的財產清單 ---------- */
+async function loadMine() {
+  const who = $('who').value.trim(), token = $('token').value.trim();
+  if (!who || !token) { $('mine').style.display = 'none'; return; }
+  const seq = ++mineSeq;
+  $('mine').style.display = 'block';
+  $('mineSummary').textContent = '載入清單中…';
+  let res;
+  try { res = await call({ action: 'list', who }); }
+  catch (e) {
+    if (seq === mineSeq) $('mineSummary').innerHTML = '<span class="warn">連線失敗，請確認網路</span>';
+    return;
+  }
+  if (seq !== mineSeq) return;
+  if (!res.ok) {
+    $('mineSummary').innerHTML = `<span class="warn">${esc(res.msg)}</span>`;
+    $('mineList').innerHTML = ''; return;
+  }
+  mine = res;
+  renderMine();
+}
+
+function renderLocOptions() {
+  const stat = new Map();
+  mine.items.forEach(it => {
+    const k = it.存放地點 || '（未填）';
+    const s = stat.get(k) || { rem: 0, tot: 0 };
+    s.tot++;
+    if (it.盤點狀態 !== '已盤點') s.rem++;
+    stat.set(k, s);
+  });
+  if (selLoc && !stat.has(selLoc)) selLoc = '';
+  let html = `<option value="">全部地點（剩 ${mine.remaining}/${mine.total}）</option>`;
+  stat.forEach((s, k) => {
+    html += `<option value="${esc(k)}"${k === selLoc ? ' selected' : ''}>${esc(k)}（剩 ${s.rem}/${s.tot}）</option>`;
+  });
+  $('loc').innerHTML = html;
+  $('loc').value = selLoc;
+  return stat;
+}
+
+function renderMine() {
+  if (!mine) return;
+  if (mine.total === 0) {
+    $('mineSummary').innerHTML = '<span class="warn">清冊中找不到此保管人，請確認姓名</span>';
+    $('mineBar').style.width = '0'; $('mineList').innerHTML = '';
+    $('loc').innerHTML = ''; $('locInfo').textContent = ''; return;
+  }
+  const pct = Math.round(mine.done / mine.total * 100);
+  $('mineSummary').innerHTML = mine.remaining === 0
+    ? `<span class="ok">🎉 全部盤點完成（共 ${mine.total} 件）</span>`
+    : `剩餘 <b style="font-size:22px">${mine.remaining}</b> 件未盤點（共 ${mine.total} 件，已完成 ${mine.done} 件）`;
+  $('mineBar').style.width = pct + '%';
+
+  const stat = renderLocOptions();
+  if (selLoc) {
+    const s = stat.get(selLoc);
+    $('locInfo').innerHTML = s.rem === 0
+      ? `📍${esc(selLoc)}：<span class="ok">已全部盤點完成 ✔</span>`
+      : `📍${esc(selLoc)}：此地點剩餘 <b>${s.rem}</b> 件（共 ${s.tot} 件）`;
+  } else {
+    $('locInfo').textContent = '';
+  }
+
+  const showDone = $('showDone').checked;
+  const html = mine.items.map((it, i) => ({ it, i }))
+    .filter(x => !selLoc || (x.it.存放地點 || '（未填）') === selLoc)
+    .filter(x => showDone || x.it.盤點狀態 !== '已盤點')
+    .map(({ it, i }) => `
+      <button class="row ${it.盤點狀態 === '已盤點' ? 'done' : ''}" data-i="${i}">
+        <b>${esc(it.登錄號)}</b>｜${esc(it.財產名稱)}${it.盤點狀態 === '已盤點' ? ' ✔' : ''}<br>
+        <small>${esc(it.型式)}<br>📍${esc(it.存放地點)}</small>
+      </button>`).join('');
+  $('mineList').innerHTML = html || '<p class="ok">沒有未盤點的品項</p>';
+  $('mineList').querySelectorAll('button[data-i]').forEach(b =>
+    b.onclick = () => openFromList(+b.dataset.i));
+}
+
+async function openFromList(i) {
+  try { if (scanner && scanner.isScanning) await scanner.stop(); } catch (e) {}
+  const it = mine.items[i];
+  current = { code: it.登錄號, items: [it], item: it, fromList: true };
+  $('msg').style.display = 'none';
+  showCard(it);
+  $('card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/* ---------- 掃描 ---------- */
 async function startScan() {
   if (!scanner) scanner = new Html5Qrcode('reader');
   try {
@@ -80,7 +208,7 @@ async function lookup(code) {
   let res;
   try { res = await call({ action: 'lookup', code, who: $('who').value.trim() }); }
   catch (e) { say('連線失敗，請確認網路後重試', 'warn'); return; }
-  if (!res.ok) { say(res.msg, 'warn'); $('card').style.display = 'none'; return; }
+  if (!res.ok) { say(esc(res.msg), 'warn'); $('card').style.display = 'none'; return; }
   current = { code, items: res.items, item: null };
   $('msg').style.display = 'none';
   if (res.items.length === 1) pick(0); else showChoices(res.items);
@@ -91,12 +219,11 @@ function pick(i) {
   showCard(current.item);
 }
 
-// 撞號：同一個登錄號對應多個品項，讓同仁對照標籤上的物品編號選擇
 function showChoices(items) {
   const btns = items.map((it, i) => `
     <button class="gray" data-i="${i}" style="text-align:left">
-      <b>${it.物品編號}</b>｜${it.財產名稱}${it.盤點狀態 === '已盤點' ? '（已盤點）' : ''}<br>
-      <small>${it.型式} ／ ${it.存放地點} ／ ${it.保管人}</small>
+      <b>${esc(it.物品編號)}</b>｜${esc(it.財產名稱)}${it.盤點狀態 === '已盤點' ? '（已盤點）' : ''}<br>
+      <small>${esc(it.型式)} ／ ${esc(it.存放地點)} ／ ${esc(it.保管人)}</small>
     </button>`).join('');
   $('card').style.display = 'block';
   $('card').innerHTML =
@@ -108,17 +235,17 @@ function showChoices(items) {
 
 function showCard(it) {
   const rows = ['物品編號','財產名稱','型式','存放地點','保管人','領用單位','購置日期']
-    .map(k => `<tr><td>${k}</td><td>${it[k] ?? ''}</td></tr>`).join('');
+    .map(k => `<tr><td>${k}</td><td>${esc(it[k])}</td></tr>`).join('');
   const done = it.盤點狀態 === '已盤點'
-    ? `<p class="ok">此品項已於 ${it.盤點時間} 由 ${it.盤點人} 盤點</p>` : '';
-  const mine = it.notMine
-    ? `<p class="warn">注意：此品項保管人為 ${it.保管人}，非您本人</p>` : '';
+    ? `<p class="ok">此品項已於 ${esc(it.盤點時間)} 由 ${esc(it.盤點人)} 盤點</p>` : '';
+  const mineWarn = it.notMine
+    ? `<p class="warn">注意：此品項保管人為 ${esc(it.保管人)}，非您本人</p>` : '';
   $('card').style.display = 'block';
-  $('card').innerHTML = `<table>${rows}</table>${done}${mine}
-    <select id="cond"><option>正常</option><option>損壞</option><option>待報廢</option><option>地點不符</option></select>
+  $('card').innerHTML = `<table>${rows}</table>${done}${mineWarn}
+    <select id="cond"><option>正常</option><option>損壞</option><option>待報廢</option><option>地點不符</option><option>保管人不符</option><option>無標籤</option></select>
     <input id="note" placeholder="備註（選填）">
     <button id="ok">確認盤點</button>
-    <button class="gray" id="cancel">取消，掃下一個</button>`;
+    <button class="gray" id="cancel">取消</button>`;
   $('ok').onclick = confirmIt;
   $('cancel').onclick = reset;
 }
@@ -131,14 +258,18 @@ async function confirmIt() {
       itemNo: current.item.物品編號,
       who: $('who').value.trim(), condition: $('cond').value, note: $('note').value.trim() });
   } catch (e) { say('連線失敗，請重試', 'warn'); $('ok').disabled = false; return; }
-  if (res.ok) { say('✔ ' + current.item.財產名稱 + ' 盤點完成', 'ok'); reset(true); }
-  else { say(res.msg, 'warn'); $('ok').disabled = false; }
+  if (res.ok) {
+    say('✔ ' + esc(current.item.財產名稱) + ' 盤點完成', 'ok');
+    reset(true);
+    loadMine();
+  } else { say(esc(res.msg), 'warn'); $('ok').disabled = false; }
 }
 
 function reset(keepMsg) {
+  const fromList = current && current.fromList;
   $('card').style.display = 'none'; current = null;
   if (keepMsg !== true) $('msg').style.display = 'none';
-  startScan();
+  if (!fromList) startScan();
 }
 
 $('start').onclick = startScan;
@@ -150,6 +281,8 @@ $('file').onchange = async e => {
   catch (err) { say('辨識不到 QR code，請靠近一點再拍', 'warn'); }
   e.target.value = '';
 };
+
+loadMine();
 </script>
 </body>
 </html>
