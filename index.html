@@ -29,6 +29,9 @@
 <body>
 
 <!-- 1. 姓名與通關碼 -->
+<!-- 同步狀態（有尚未送出的盤點時才顯示） -->
+<div class="box" id="syncBar" style="display:none"></div>
+
 <div class="box">
   <input id="who" placeholder="盤點人姓名（例如：黃彥然）">
   <input id="token" placeholder="通關碼" type="password">
@@ -99,16 +102,16 @@ function say(t, cls) {
 }
 
 /* ---------- 我的財產清單 ---------- */
-async function loadMine() {
+async function loadMine(silent) {
   const who = $('who').value.trim(), token = $('token').value.trim();
   if (!who || !token) { $('mine').style.display = 'none'; return; }
   const seq = ++mineSeq;
   $('mine').style.display = 'block';
-  $('mineSummary').textContent = '載入清單中…';
+  if (!silent) $('mineSummary').textContent = '載入清單中…';
   let res;
   try { res = await call({ action: 'list', who }); }
   catch (e) {
-    if (seq === mineSeq) $('mineSummary').innerHTML = '<span class="warn">連線失敗，請確認網路</span>';
+    if (seq === mineSeq && !silent) $('mineSummary').innerHTML = '<span class="warn">連線失敗，請確認網路</span>';
     return;
   }
   if (seq !== mineSeq) return;
@@ -116,7 +119,8 @@ async function loadMine() {
     $('mineSummary').innerHTML = `<span class="warn">${esc(res.msg)}</span>`;
     $('mineList').innerHTML = ''; return;
   }
-  mine = res;
+  mine = res; mine.who = who;
+  applyPending();
   renderMine();
 }
 
@@ -177,7 +181,7 @@ function renderMine() {
 }
 
 async function openFromList(i) {
-  try { if (scanner && scanner.isScanning) await scanner.stop(); } catch (e) {}
+  pauseScan();
   const it = mine.items[i];
   current = { code: it.登錄號, items: [it], item: it, fromList: true };
   $('msg').style.display = 'none';
@@ -186,27 +190,84 @@ async function openFromList(i) {
 }
 
 /* ---------- 掃描 ---------- */
+function getScanner() {
+  if (!scanner) scanner = new Html5Qrcode('reader', {
+    formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],            // 只辨識 QR，不辨識其他條碼
+    experimentalFeatures: { useBarCodeDetectorIfSupported: true },      // 有手機內建偵測器就用它
+    verbose: false
+  });
+  return scanner;
+}
+const scanState = () => (scanner ? scanner.getState() : 1);   // 1 未啟動、2 掃描中、3 暫停
+
 async function startScan() {
-  if (!scanner) scanner = new Html5Qrcode('reader');
+  const s = getScanner();
+  if (scanState() === 3) { try { s.resume(); return; } catch (e) {} }   // 暫停中：直接繼續，不重開相機
+  if (scanState() === 2) return;
+  const cfg = {
+    fps: 20, disableFlip: true,
+    qrbox: (w, h) => { const m = Math.floor(Math.min(w, h) * 0.8); return { width: m, height: m }; },
+    videoConstraints: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+  };
   try {
-    await scanner.start({ facingMode: 'environment' },
-      { fps: 10, qrbox: 250 }, onCode);
-  } catch (e) { say('相機無法啟動，請改用下方拍照辨識或手動輸入', 'warn'); }
+    await s.start({ facingMode: 'environment' }, cfg, onCode, () => {});
+  } catch (e) {
+    try {                                    // 高解析度失敗就退回預設設定
+      delete cfg.videoConstraints;
+      await s.start({ facingMode: 'environment' }, cfg, onCode, () => {});
+    } catch (e2) { say('相機無法啟動，請改用下方拍照辨識或手動輸入', 'warn'); return; }
+  }
+  tuneFocus();
 }
 
-async function onCode(code) {
+function tuneFocus() {                        // 支援的手機才會生效（多數 Android）
+  try {
+    const v = document.querySelector('#reader video');
+    const t = v && v.srcObject && v.srcObject.getVideoTracks()[0];
+    const caps = t && t.getCapabilities ? t.getCapabilities() : {};
+    if (t && caps.focusMode && caps.focusMode.includes('continuous'))
+      t.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
+  } catch (e) {}
+}
+function pauseScan() { try { if (scanState() === 2) scanner.pause(true); } catch (e) {} }
+async function stopScan() { try { if (scanState() !== 1) await scanner.stop(); } catch (e) {} }
+
+async function onCode(text) {
   if (busy) return;
   busy = true;
-  try { if (scanner && scanner.isScanning) await scanner.stop(); } catch (e) {}
-  await lookup(code);
-  busy = false;
+  if (navigator.vibrate) navigator.vibrate(60);
+  pauseScan();                                // 凍結畫面但不關相機，下一件可立即繼續
+  try { await lookup(text); } finally { busy = false; }
+}
+
+// 從 QR 網址取出登錄號（與後端規則相同）
+function regFromCode(raw) {
+  const s = String(raw || '').trim();
+  const m = s.match(/[?&]id=([^&]+)/);
+  const id = m ? decodeURIComponent(m[1]) : s;
+  const parts = id.split('_');
+  return parts[parts.length - 1].trim();
 }
 
 async function lookup(code) {
-  if (!$('who').value.trim()) { say('請先輸入盤點人姓名', 'warn'); return; }
+  const who = $('who').value.trim();
+  if (!who) { say('請先輸入盤點人姓名', 'warn'); return; }
+  const reg = regFromCode(code);
+
+  // 快速路徑：品項在自己的清單內、且登錄號不會撞號 → 直接用本機資料，不用連線
+  if (mine && mine.who === who && !(mine.dup || []).includes(reg)) {
+    const it = mine.items.find(x => String(x.登錄號) === reg);
+    if (it) {
+      current = { code: reg, items: [it], item: it };
+      $('msg').style.display = 'none';
+      showCard(it);
+      return;
+    }
+  }
+
   say('查詢中…');
   let res;
-  try { res = await call({ action: 'lookup', code, who: $('who').value.trim() }); }
+  try { res = await call({ action: 'lookup', code, who }); }
   catch (e) { say('連線失敗，請確認網路後重試', 'warn'); return; }
   if (!res.ok) { say(esc(res.msg), 'warn'); $('card').style.display = 'none'; return; }
   current = { code, items: res.items, item: null };
@@ -250,39 +311,108 @@ function showCard(it) {
   $('cancel').onclick = reset;
 }
 
-async function confirmIt() {
-  $('ok').disabled = true;
-  let res;
-  try {
-    res = await call({ action: 'confirm', code: current.code,
-      itemNo: current.item.物品編號,
-      who: $('who').value.trim(), condition: $('cond').value, note: $('note').value.trim() });
-  } catch (e) { say('連線失敗，請重試', 'warn'); $('ok').disabled = false; return; }
-  if (res.ok) {
-    say('✔ ' + esc(current.item.財產名稱) + ' 盤點完成', 'ok');
-    reset(true);
-    loadMine();
-  } else { say(esc(res.msg), 'warn'); $('ok').disabled = false; }
+/* ---------- 盤點佇列：先寫本機、背景送出 ---------- */
+const lsGet = (k) => { try { return JSON.parse(localStorage.getItem(k) || '[]'); } catch (e) { return []; } };
+let queue = lsGet('invQueue'), failed = lsGet('invFailed');
+let flushing = false, retryTimer = null;
+const saveQ = () => {
+  localStorage.setItem('invQueue', JSON.stringify(queue));
+  localStorage.setItem('invFailed', JSON.stringify(failed));
+  renderSync();
+};
+const nowStr = () => {
+  const d = new Date(), z = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}/${z(d.getMonth() + 1)}/${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}`;
+};
+
+function markDone(it, who, time) {
+  if (!mine) return;
+  const t = mine.items.find(x => x.登錄號 === it.登錄號 && x.物品編號 === it.物品編號);
+  if (!t) return;
+  if (t.盤點狀態 !== '已盤點') { mine.done++; mine.remaining--; }
+  t.盤點狀態 = '已盤點'; t.盤點時間 = time; t.盤點人 = who;
 }
+function applyPending() {                      // 伺服器清單尚未包含的盤點，套回畫面
+  if (!mine) return;
+  queue.forEach(j => markDone({ 登錄號: j.regNo, 物品編號: j.itemNo }, j.who, j.time));
+  renderMine();
+}
+
+function renderSync() {
+  const el = $('syncBar');
+  if (!queue.length && !failed.length) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  let h = '';
+  if (queue.length) h += `<div>⏳ 有 <b>${queue.length}</b> 筆盤點正在同步到試算表…<br><small>請先不要關閉網頁；斷線時會自動重試</small></div>`;
+  if (failed.length) {
+    h += `<div class="warn">⚠ ${failed.length} 筆同步失敗：${esc(failed[0].err)}`
+      + (failed.length > 1 ? ' 等' : '') + `<br><small>${failed.map(j => esc(j.name)).join('、')}</small></div>`
+      + `<button id="retryBtn">重新送出失敗的項目</button>`;
+  }
+  el.innerHTML = h;
+  const rb = $('retryBtn');
+  if (rb) rb.onclick = () => { queue.push(...failed.map(({ err, ...j }) => j)); failed = []; saveQ(); flush(); };
+}
+
+async function flush() {
+  if (flushing) return;
+  flushing = true; clearTimeout(retryTimer);
+  try {
+    while (queue.length) {
+      const j = queue[0];
+      let res;
+      try {
+        res = await call({ action: 'confirm', code: j.regNo, itemNo: j.itemNo,
+          who: j.who, condition: j.cond, note: j.note });
+      } catch (e) {                            // 網路問題：保留佇列，稍後重試
+        retryTimer = setTimeout(flush, 5000);
+        return;
+      }
+      queue.shift();
+      if (!res.ok) failed.push({ ...j, err: res.msg || '未知錯誤' });
+      saveQ();
+    }
+    if (mine) loadMine(true);                  // 全部送完才同步最新進度，避免覆蓋尚未送出的資料
+  } finally { flushing = false; }
+}
+
+function confirmIt() {
+  const cur = current, it = cur.item, who = $('who').value.trim();
+  const job = { regNo: it.登錄號, itemNo: it.物品編號, name: it.財產名稱, who,
+    cond: $('cond').value, note: $('note').value.trim(), time: nowStr() };
+  queue.push(job); saveQ();
+  markDone(it, who, job.time);                 // 畫面立即更新
+  renderMine();
+  say('✔ ' + esc(it.財產名稱) + ' 盤點完成', 'ok');
+  reset(true);
+  flush();                                     // 背景送出，不等待
+}
+
+window.addEventListener('online', flush);
+window.addEventListener('beforeunload', e => {
+  if (queue.length) { e.preventDefault(); e.returnValue = ''; }
+});
 
 function reset(keepMsg) {
   const fromList = current && current.fromList;
   $('card').style.display = 'none'; current = null;
   if (keepMsg !== true) $('msg').style.display = 'none';
-  if (!fromList) startScan();
+  if (!fromList) startScan();                 // 從清單開啟的，不自動開相機
 }
 
 $('start').onclick = startScan;
 $('manualGo').onclick = () => { const v = $('manual').value.trim(); if (v) lookup(v); };
 $('file').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
-  if (!scanner) scanner = new Html5Qrcode('reader');
-  try { const code = await scanner.scanFile(f, false); await lookup(code); }
+  await stopScan();                           // 檔案辨識需先關閉相機
+  try { const code = await getScanner().scanFile(f, false); await lookup(code); }
   catch (err) { say('辨識不到 QR code，請靠近一點再拍', 'warn'); }
   e.target.value = '';
 };
 
+renderSync();
 loadMine();
+if (queue.length) flush();
 </script>
 </body>
 </html>
